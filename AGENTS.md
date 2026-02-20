@@ -1,6 +1,6 @@
 # AGENTS.MD
 
-The following are guidelines for coding agents working on this project
+The following are guidelines for coding agents working on this project.
 
 ## Project Description
 
@@ -18,3 +18,4 @@ Word Cloud. A web app for creating sessions (a la Kahoot!) in which a host can d
 ### Frontend (TanStack Start)
 
 - Use shadcn for all primitives, install new primitives through the CLI `bunx --bun shadcn@latest add button`
+- Keep it simple, no glowing, no striking colors that were not requested.
