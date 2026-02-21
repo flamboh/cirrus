@@ -41,12 +41,16 @@ export function WordCloud({
 
   return (
     <div
-      className={cn('cloud-stage cloud-stage-lib', blankWhenEmpty && 'cloud-stage-plain', className)}
+      className={cn(
+        'relative mt-3 min-h-72 overflow-hidden rounded-2xl border border-zinc-700 bg-[repeating-linear-gradient(-30deg,#31353b,#31353b_12px,#2c3035_12px,#2c3035_24px)]',
+        blankWhenEmpty && 'mt-0 border-0 bg-transparent',
+        className,
+      )}
     >
       {cloudWords.length ? (
         <ReactWordcloud words={cloudWords} options={options} maxWords={80} minSize={minSize} />
       ) : blankWhenEmpty ? null : (
-        <div className="cloud-empty">
+        <div className="grid min-h-72 place-content-center text-zinc-400">
           <span>Waiting for words</span>
         </div>
       )}

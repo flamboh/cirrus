@@ -8,6 +8,7 @@ Word Cloud. A web app for creating sessions (a la Kahoot!) in which a host can d
 
 ## Specifications
 
+- This app is greenfield/in development, breaking changes encouraged
 - Use Bun for PM
 - Assume there is already a dev server running
 
@@ -17,5 +18,6 @@ Word Cloud. A web app for creating sessions (a la Kahoot!) in which a host can d
 
 ### Frontend (TanStack Start)
 
+- Use Tailwind for all styling
 - Use shadcn for all primitives, install new primitives through the CLI `bunx --bun shadcn@latest add button`
-- Keep it simple, no glowing, no striking colors that were not requested.
+- Keep it simple, no glowing, no striking colors that were not requested

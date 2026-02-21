@@ -1,9 +1,43 @@
 import { ConvexError, v } from 'convex/values'
-import { mutation, query } from './_generated/server'
+import { internal } from './_generated/api'
+import { internalMutation, mutation, query } from './_generated/server'
 
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 const MIN_WORD_INTERVAL_MS = 800
+const SESSION_TTL_MS = 30 * 60 * 1000
 const BLOCKLIST = new Set(['hate', 'slur'])
+const sessionStatusValidator = v.union(v.literal('active'), v.literal('closed'))
+const wordCountValidator = v.object({
+  word: v.string(),
+  count: v.number(),
+})
+const snapshotValidator = v.object({
+  id: v.id('sessions'),
+  code: v.string(),
+  status: sessionStatusValidator,
+  playerCount: v.number(),
+  words: v.array(wordCountValidator),
+  topWord: v.union(wordCountValidator, v.null()),
+})
+const restoreHostResultValidator = v.union(
+  v.object({
+    ok: v.literal(true),
+    code: v.string(),
+  }),
+  v.object({
+    ok: v.literal(false),
+  }),
+)
+const restorePlayerResultValidator = v.union(
+  v.object({
+    ok: v.literal(true),
+    code: v.string(),
+    name: v.string(),
+  }),
+  v.object({
+    ok: v.literal(false),
+  }),
+)
 
 function randomString(size: number, alphabet: string) {
   let out = ''
@@ -23,8 +57,30 @@ function normalizeWord(input: string) {
   return normalized
 }
 
+async function closeIfExpired(
+  ctx: { db: { patch: (id: any, value: any) => Promise<any> } },
+  session: { _id: any; status: 'active' | 'closed'; expiresAt: number },
+  now: number,
+) {
+  if (session.status !== 'active') {
+    return session.status
+  }
+
+  if (now >= session.expiresAt) {
+    await ctx.db.patch(session._id, { status: 'closed' })
+    return 'closed'
+  }
+
+  return 'active'
+}
+
 export const createSession = mutation({
   args: {},
+  returns: v.object({
+    sessionId: v.id('sessions'),
+    code: v.string(),
+    hostToken: v.string(),
+  }),
   handler: async (ctx) => {
     for (let attempt = 0; attempt < 8; attempt += 1) {
       const code = randomString(6, CODE_CHARS)
@@ -39,11 +95,16 @@ export const createSession = mutation({
 
       const hostToken = randomString(24, `${CODE_CHARS}${CODE_CHARS.toLowerCase()}`)
       const now = Date.now()
+      const expiresAt = now + SESSION_TTL_MS
       const sessionId = await ctx.db.insert('sessions', {
         code,
         hostToken,
         status: 'active',
         createdAt: now,
+        expiresAt,
+      })
+      await ctx.scheduler.runAfter(SESSION_TTL_MS, internal.sessions.expireSession, {
+        sessionId,
       })
 
       return { sessionId, code, hostToken }
@@ -58,7 +119,14 @@ export const joinSession = mutation({
     code: v.string(),
     name: v.string(),
   },
+  returns: v.object({
+    sessionId: v.id('sessions'),
+    playerId: v.id('players'),
+    playerToken: v.string(),
+    code: v.string(),
+  }),
   handler: async (ctx, args) => {
+    const now = Date.now()
     const code = args.code.trim().toUpperCase()
     const name = args.name.trim().slice(0, 24)
 
@@ -71,7 +139,12 @@ export const joinSession = mutation({
       .withIndex('by_code', (q) => q.eq('code', code))
       .unique()
 
-    if (!session || session.status !== 'active') {
+    if (!session) {
+      throw new ConvexError('Session not available')
+    }
+
+    const sessionStatus = await closeIfExpired(ctx, session, now)
+    if (sessionStatus !== 'active') {
       throw new ConvexError('Session not available')
     }
 
@@ -110,9 +183,15 @@ export const submitWord = mutation({
     playerToken: v.string(),
     word: v.string(),
   },
+  returns: v.object({ ok: v.boolean() }),
   handler: async (ctx, args) => {
     const session = await ctx.db.get(args.sessionId)
-    if (!session || session.status !== 'active') {
+    if (!session) {
+      throw new ConvexError('Session closed')
+    }
+
+    const sessionStatus = await closeIfExpired(ctx, session, Date.now())
+    if (sessionStatus !== 'active') {
       throw new ConvexError('Session closed')
     }
 
@@ -179,6 +258,7 @@ export const closeSession = mutation({
     sessionId: v.id('sessions'),
     hostToken: v.string(),
   },
+  returns: v.object({ ok: v.boolean() }),
   handler: async (ctx, args) => {
     const session = await ctx.db.get(args.sessionId)
     if (!session) {
@@ -193,10 +273,77 @@ export const closeSession = mutation({
   },
 })
 
+export const restoreHostSession = mutation({
+  args: {
+    sessionId: v.id('sessions'),
+    hostToken: v.string(),
+  },
+  returns: restoreHostResultValidator,
+  handler: async (ctx, args) => {
+    const session = await ctx.db.get(args.sessionId)
+    if (!session || session.hostToken !== args.hostToken) {
+      return { ok: false as const }
+    }
+
+    const sessionStatus = await closeIfExpired(ctx, session, Date.now())
+    if (sessionStatus !== 'active') {
+      return { ok: false as const }
+    }
+
+    return { ok: true as const, code: session.code }
+  },
+})
+
+export const restorePlayerSession = mutation({
+  args: {
+    sessionId: v.id('sessions'),
+    playerId: v.id('players'),
+    playerToken: v.string(),
+  },
+  returns: restorePlayerResultValidator,
+  handler: async (ctx, args) => {
+    const session = await ctx.db.get(args.sessionId)
+    if (!session) {
+      return { ok: false as const }
+    }
+
+    const sessionStatus = await closeIfExpired(ctx, session, Date.now())
+    if (sessionStatus !== 'active') {
+      return { ok: false as const }
+    }
+
+    const player = await ctx.db.get(args.playerId)
+    if (!player || player.sessionId !== args.sessionId || player.token !== args.playerToken) {
+      return { ok: false as const }
+    }
+
+    return { ok: true as const, code: session.code, name: player.name }
+  },
+})
+
+export const expireSession = internalMutation({
+  args: {
+    sessionId: v.id('sessions'),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const session = await ctx.db.get(args.sessionId)
+    if (!session || session.status === 'closed') {
+      return null
+    }
+
+    if (Date.now() >= session.expiresAt) {
+      await ctx.db.patch(session._id, { status: 'closed' })
+    }
+    return null
+  },
+})
+
 export const sessionSnapshot = query({
   args: {
     code: v.string(),
   },
+  returns: v.union(snapshotValidator, v.null()),
   handler: async (ctx, args) => {
     const code = args.code.trim().toUpperCase()
     const session = await ctx.db

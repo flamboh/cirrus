@@ -7,6 +7,7 @@ export default defineSchema({
     hostToken: v.string(),
     status: v.union(v.literal('active'), v.literal('closed')),
     createdAt: v.number(),
+    expiresAt: v.number(),
   })
     .index('by_code', ['code'])
     .index('by_status', ['status']),
